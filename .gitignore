@@ -22,3 +22,8 @@ metastore_db/
 .vscode/
 
 spark-warehouse/
+
+/artifacts
+/mlops
+/notebooks
+/.env
