@@ -16,6 +16,79 @@ from aoa import (
 
 import joblib
 
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def get_feature_names_from_column_transformer(ct):
+    """
+    Returns output feature names from a fitted ColumnTransformer that may contain Pipelines.
+    Works for SimpleImputer/StandardScaler + OneHotEncoder pipelines.
+    """
+    feature_names = []
+
+    for name, transformer, cols in ct.transformers_:
+        if name == "remainder" and transformer == "drop":
+            continue
+        if transformer == "drop":
+            continue
+
+        # If it's a Pipeline, the last step is the real transformer (e.g., OneHotEncoder)
+        if hasattr(transformer, "named_steps"):
+            last = list(transformer.named_steps.values())[-1]
+        else:
+            last = transformer
+
+        if hasattr(last, "get_feature_names_out"):
+            # OneHotEncoder and some others
+            try:
+                names = last.get_feature_names_out(cols)
+            except TypeError:
+                names = last.get_feature_names_out()
+            feature_names.extend(names.tolist())
+        else:
+            # For scalers/imputers: names are the original columns
+            if isinstance(cols, (list, tuple, np.ndarray, pd.Index)):
+                feature_names.extend(list(cols))
+            else:
+                feature_names.append(str(cols))
+
+    return np.array(feature_names)
+
+def plot_logreg_feature_importance(fitted_pipeline, img_filename, top_n=30, use_abs=True, title=None):
+    """
+    fitted_pipeline: sklearn Pipeline with steps: preprocess (ColumnTransformer) + model (LogisticRegression)
+    """
+    preprocess = fitted_pipeline.named_steps["preprocess"]
+    model = fitted_pipeline.named_steps["model"]
+
+    feature_names = get_feature_names_from_column_transformer(preprocess)
+
+    # Binary classification: coef_ shape (1, n_features)
+    coefs = model.coef_.ravel()
+    if use_abs:
+        importances = np.abs(coefs)
+        sort_idx = np.argsort(importances)[::-1]
+    else:
+        importances = coefs
+        sort_idx = np.argsort(np.abs(importances))[::-1]  # sort by magnitude but keep sign
+
+    top_idx = sort_idx[:top_n]
+
+    plot_df = pd.DataFrame({
+        "feature": feature_names[top_idx],
+        "coef": coefs[top_idx],
+        "importance": importances[top_idx],
+    })
+
+    plt.figure(figsize=(10, max(4, top_n * 0.25)))
+    plt.barh(plot_df["feature"][::-1], plot_df["coef"][::-1])  # signed bars
+    plt.xlabel("Coefficient (log-odds units)")
+    plt.title(title or f"Top {top_n} Important Features")
+    plt.tight_layout()
+    # plt.show()
+    fig = plt.gcf()
+    fig.savefig(img_filename, dpi=500)
+    plt.clf()
 
 def train(context: ModelContext, **kwargs):
     tmo_create_context()
@@ -86,6 +159,9 @@ def train(context: ModelContext, **kwargs):
     joblib.dump(model, f"{context.artifact_output_path}/model.joblib")
 
     print("Saved trained model")
+
+    # features importance
+    plot_logreg_feature_importance(model, f"{context.artifact_output_path}/feature_importance")
 
     print("Recording training stats")
 
