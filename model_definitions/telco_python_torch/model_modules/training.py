@@ -24,6 +24,8 @@ import joblib
 import matplotlib.pyplot as plt
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(device)
+
 torch.manual_seed(42)
 np.random.seed(42)
 
