@@ -180,6 +180,7 @@ def train(context: ModelContext, **kwargs):
     max_epochs = 50
 
     batch_size = context.hyperparams["batch_size"]
+    print("batch_size:", batch_size)
 
     train_loader = DataLoader(TabularDataset(X_train_p, y_train_t), batch_size=batch_size, shuffle=True)
     test_loader  = DataLoader(TabularDataset(X_test_p, y_test_t),   batch_size=batch_size, shuffle=False)
