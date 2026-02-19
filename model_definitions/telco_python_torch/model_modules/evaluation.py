@@ -47,7 +47,7 @@ class LogisticRegressionTorch(nn.Module):
 def evaluate(context: ModelContext, **kwargs):
 
     tmo_create_context()
-    batch_size = context.hyperparams["batch_size"]
+    batch_size = int(context.hyperparams["batch_size"])
 
     # model = joblib.load(f"{context.artifact_input_path}/model.joblib")
     preprocess = joblib.load(f"{context.artifact_input_path}/preprocess.joblib")
