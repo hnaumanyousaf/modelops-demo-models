@@ -1,13 +1,16 @@
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+import os, sys
+# Ensure the folder containing `model_modules/` is on sys.path
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))  # -> $model_local_path
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# torch.manual_seed(42)
-# np.random.seed(42)
+import json
+import numpy as np
+import pandas as pd
+import joblib
+import torch
 
 from sklearn import metrics
-from sklearn.metrics import ConfusionMatrixDisplay, RocCurveDisplay
 from teradataml import DataFrame, copy_to_sql
 from aoa import (
     record_evaluation_stats,
@@ -16,91 +19,80 @@ from aoa import (
     ModelContext
 )
 
-import joblib
-import json
-import numpy as np
-import pandas as pd
+from model_modules.data import TabularDataset
+from model_modules.model import LogisticRegressionTorch
+from model_modules.preprocess import transform_preprocess
+from model_modules.engine import get_device, predict_proba
 
-
-# ---------------------------------------------------------------------
-# Dataset / DataLoader
-# ---------------------------------------------------------------------
-class TabularDataset(Dataset):
-    def __init__(self, X_np: np.ndarray, y_np: np.ndarray):
-        self.X = torch.from_numpy(X_np)
-        self.y = torch.from_numpy(y_np).view(-1, 1)
-
-    def __len__(self):
-        return self.X.shape[0]
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
-
-class LogisticRegressionTorch(nn.Module):
-    def __init__(self, in_features: int):
-        super().__init__()
-        self.linear = nn.Linear(in_features, 1)
-
-    def forward(self, x):
-        return self.linear(x)  # logits
 
 def evaluate(context: ModelContext, **kwargs):
-
     tmo_create_context()
+
+    device = get_device()
     batch_size = int(context.hyperparams["batch_size"])
 
-    # model = joblib.load(f"{context.artifact_input_path}/model.joblib")
+    # Load preprocessing
     preprocess = joblib.load(f"{context.artifact_input_path}/preprocess.joblib")
 
     feature_names = context.dataset_info.feature_names
     target_name = context.dataset_info.target_names[0]
 
+    # Read evaluation dataset from Teradata -> pandas
     test_df = DataFrame.from_query(context.dataset_info.sql)
     test_pdf = test_df.to_pandas(all_rows=True)
 
+    # Prepare X/y
     X_test = test_pdf[feature_names]
-    y_test = test_pdf[target_name].map({'Yes': 1, 'No': 0}).values
-    y_test_t  = y_test.astype(np.float32)
+    y_test = test_pdf[target_name].map({'Yes': 1, 'No': 0}).values.astype(np.int64)
+    y_test_f = y_test.astype(np.float32)
 
-    X_test_p  = preprocess.transform(X_test)
-    X_test_p  = X_test_p.toarray().astype(np.float32)  if hasattr(X_test_p, "toarray") else X_test_p.astype(np.float32)
-    test_loader  = DataLoader(TabularDataset(X_test_p, y_test_t),   batch_size=batch_size, shuffle=False)
+    # Apply same preprocessing used in training
+    X_test_p = transform_preprocess(preprocess, X_test)
 
-    print("Loading model")
+    # Build loader
+    test_loader = torch.utils.data.DataLoader(
+        TabularDataset(X_test_p, y_test_f),
+        batch_size=batch_size,
+        shuffle=False
+    )
 
+    # Load model
     input_dim = X_test_p.shape[1]
     print("Input dim after preprocessing:", input_dim)
 
     model = LogisticRegressionTorch(input_dim).to(device)
-    model.load_state_dict(torch.load(f"{context.artifact_input_path}/model.pt"))
-    @torch.no_grad()
-    def predict_proba(loader: DataLoader) -> np.ndarray:
-        model.eval()
-        probs = []
-        for xb, _ in loader:
-            xb = xb.to(device)
-            logits = model(xb)
-            p = torch.sigmoid(logits).cpu().numpy().reshape(-1)
-            probs.append(p)
-        return np.concatenate(probs, axis=0)
+    state = torch.load(f"{context.artifact_input_path}/model.pt", map_location=device)
+    model.load_state_dict(state)
 
+    # Predict
     print("Scoring")
-    y_proba = predict_proba(test_loader)
-    threshold = 0.5
-    y_pred = (y_proba >= threshold).astype(int)
+    y_proba = predict_proba(model, test_loader, device=device)
+
+    threshold = float(context.hyperparams.get("threshold", 0.5))
+    y_pred = (y_proba >= threshold).astype(np.int64)
 
     y_pred_tdf = pd.DataFrame(y_pred, columns=[target_name])
     y_pred_tdf["CustomerID"] = test_pdf["CustomerID"].values
 
+    # # Example: join predictions back for reporting (keep if you need it)
+    # if "CustomerID" in test_pdf.columns:
+    #     y_pred_tdf = pd.DataFrame({
+    #         "CustomerID": test_pdf["CustomerID"].values,
+    #         "y_pred": y_pred,
+    #         "y_proba": y_proba
+    #     })
+    #     # If you want to persist to Teradata later, you can use copy_to_sql()
+
     evaluation = {
-        'Accuracy': '{:.2f}'.format(metrics.accuracy_score(y_test, y_pred)),
-        'Recall': '{:.2f}'.format(metrics.recall_score(y_test, y_pred)),
-        'Precision': '{:.2f}'.format(metrics.precision_score(y_test, y_pred)),
-        'f1-score': '{:.2f}'.format(metrics.f1_score(y_test, y_pred))
+        "Accuracy": float(metrics.accuracy_score(y_test, y_pred)),
+        "Recall": float(metrics.recall_score(y_test, y_pred, zero_division=0)),
+        "Precision": float(metrics.precision_score(y_test, y_pred, zero_division=0)),
+        "f1-score": float(metrics.f1_score(y_test, y_pred, zero_division=0)),
     }
 
-    with open(f"{context.artifact_output_path}/metrics.json", "w+") as f:
-        json.dump(evaluation, f)
+    # Save metrics artifact
+    with open(f"{context.artifact_output_path}/metrics.json", "w") as f:
+        json.dump(evaluation, f, indent=2)
 
     # ConfusionMatrixDisplay.from_estimator(model, X_test, y_test_t)
     # save_plot('Confusion Matrix', context=context)
