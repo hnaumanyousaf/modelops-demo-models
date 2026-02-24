@@ -13,10 +13,10 @@ from sklearn.model_selection import train_test_split
 from teradataml import DataFrame
 from aoa import tmo_create_context, ModelContext, record_training_stats
 
-from .preprocess import infer_column_types, build_preprocess, fit_transform_preprocess, transform_preprocess
-from .data import make_loaders
-from .model import LogisticRegressionTorch
-from .engine import get_device, fit_with_early_stopping
+from model_modules.preprocess import infer_column_types, build_preprocess, fit_transform_preprocess, transform_preprocess
+from model_modules.data import make_loaders
+from model_modules.model import LogisticRegressionTorch
+from model_modules.engine import get_device, fit_with_early_stopping
 
 def train(context: ModelContext, **kwargs):
     tmo_create_context()
@@ -87,16 +87,6 @@ def train(context: ModelContext, **kwargs):
     # Save artifacts (model weights + preprocess)
     torch.save(model.state_dict(), f"{context.artifact_output_path}/model.pt")
     joblib.dump(preprocess, f"{context.artifact_output_path}/preprocess.joblib")
-
-    # # Optional: save metadata that scoring/eval can rely on
-    # meta = {
-    #     "feature_names": list(feature_names),
-    #     "target_name": target_name,
-    #     "positive_label": 1,
-    #     "negative_label": 0,
-    # }
-    # joblib.dump(meta, f"{context.artifact_output_path}/meta.joblib")
-    #     print("Recording training stats")
 
     _categorical_stat_cols_list = [target_name]+cat_cols
     print(_categorical_stat_cols_list)

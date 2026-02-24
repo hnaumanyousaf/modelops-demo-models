@@ -11,6 +11,7 @@ import joblib
 import torch
 
 from sklearn import metrics
+import matplotlib.pyplot as plt
 from teradataml import DataFrame, copy_to_sql
 from aoa import (
     record_evaluation_stats,
@@ -94,11 +95,23 @@ def evaluate(context: ModelContext, **kwargs):
     with open(f"{context.artifact_output_path}/metrics.json", "w") as f:
         json.dump(evaluation, f, indent=2)
 
-    # ConfusionMatrixDisplay.from_estimator(model, X_test, y_test_t)
-    # save_plot('Confusion Matrix', context=context)
+    # --- Confusion Matrix ---
+    metrics.ConfusionMatrixDisplay.from_predictions(
+        y_test,
+        y_pred,
+        display_labels=["No", "Yes"],   # optional
+        normalize=None                 # or "true" for rates
+    )
+    save_plot("Confusion Matrix", context=context)
+    plt.close()
 
-    # RocCurveDisplay.from_estimator(model, X_test, y_test)
-    # save_plot('ROC Curve', context=context)
+    # --- ROC Curve ---
+    metrics.RocCurveDisplay.from_predictions(
+        y_test,
+        y_proba
+    )
+    save_plot("ROC Curve", context=context)
+    plt.close()
 
     predictions_table = "predictions_tmp"
     copy_to_sql(df=y_pred_tdf, table_name=predictions_table, index=False, if_exists="replace", temporary=True)
